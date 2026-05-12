@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>五彩五子棋</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background-color: #ffffff;
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            overflow-x: hidden;
+        }
+
+        #game-container {
+            position: relative;
+            user-select: none;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .status-container {
+            height: 100px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+        }
+
+        #board {
+            background-color: #e3c08d; 
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+            border: 2px solid #333;
+            cursor: crosshair;
+            position: relative;
+        }
+
+        .status-message {
+            font-size: 5rem;
+            font-weight: 900;
+            z-index: 100;
+            text-shadow: 2px 2px 8px rgba(0,0,0,0.2);
+            pointer-events: none;
+            display: none;
+            white-space: nowrap;
+            text-align: center;
+        }
+
+        .win-text { color: #e74c3c; }
+        .lose-text { color: #2c3e50; }
+        .start-text { color: #2ecc71; font-size: 3rem; }
+
+        #controls {
+            margin-top: 20px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .color-btn {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            border: 3px solid #ddd;
+            cursor: pointer;
+            transition: transform 0.2s, border-color 0.2s;
+        }
+
+        .color-btn.active {
+            border-color: #333;
+            transform: scale(1.2);
+        }
+
+        #canvas-fireworks {
+            position: absolute;
+            bottom: 0; 
+            left: 0;
+            width: 100%;
+            height: calc(100% - 100px); 
+            pointer-events: none;
+            z-index: 50;
+        }
+
+        .restart-btn {
+            margin-top: 25px;
+            padding: 12px 30px;
+            background: #2c3e50;
+            color: white;
+            border-radius: 8px;
+            font-weight: bold;
+            font-size: 1.2rem;
+            cursor: pointer;
+            display: none;
+            transition: background 0.3s;
+            z-index: 110;
+        }
+        
+        .restart-btn:hover {
+            background: #34495e;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <div class="status-container">
+            <div id="status-display" class="status-message">GAME START</div>
+        </div>
+        <canvas id="board"></canvas>
+        <canvas id="canvas-fireworks"></canvas>
+    </div>
+
+    <div id="controls">
+        <div class="color-btn" style="background-color: red;" data-color="red"></div>
+        <div class="color-btn" style="background-color: orange;" data-color="orange"></div>
+        <div class="color-btn" style="background-color: green;" data-color="green"></div>
+        <div class="color-btn" style="background-color: blue;" data-color="blue"></div>
+        <div class="color-btn" style="background-color: black;" data-color="black"></div>
+    </div>
+
+    <button id="again-btn" class="restart-btn" onclick="resetGame()">AGAIN</button>
+
+    <script>
+        const canvas = document.getElementById('board');
+        const ctx = canvas.getContext('2d');
+        const fwCanvas = document.getElementById('canvas-fireworks');
+        const fwCtx = fwCanvas.getContext('2d');
+        const statusDisplay = document.getElementById('status-display');
+        const againBtn = document.getElementById('again-btn');
+        const colorBtns = document.querySelectorAll('.color-btn');
+
+        const SIZE = 15;
+        const PADDING = 30;
+        let CELL_SIZE = 0;
+        let board = []; // 0: 空, 1: 玩家, 2: 電腦
+        let boardColors = []; 
+        let currentPlayer = 1;
+        let selectedColor = 'red';
+        let lastMove = null;
+        let gameOver = false;
+
+        let particles = [];
+        let animationFrameId = null;
+
+        function init() {
+            const containerWidth = Math.min(window.innerWidth - 40, 600);
+            canvas.width = containerWidth;
+            canvas.height = containerWidth;
+            fwCanvas.width = containerWidth;
+            fwCanvas.height = containerWidth;
+            CELL_SIZE = (canvas.width - 2 * PADDING) / (SIZE - 1);
+            resetGame();
+        }
+
+        function resetGame() {
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+                animationFrameId = null;
+            }
+            board = Array(SIZE).fill().map(() => Array(SIZE).fill(0));
+            boardColors = Array(SIZE).fill().map(() => Array(SIZE).fill(null));
+            currentPlayer = 1;
+            lastMove = null;
+            gameOver = false;
+            
+            againBtn.style.display = 'none';
+            statusDisplay.style.display = 'none';
+            fwCtx.clearRect(0, 0, fwCanvas.width, fwCanvas.height);
+            particles = [];
+            
+            draw();
+            showStatus("GAME START", "start-text", 2000);
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 1;
+            for (let i = 0; i < SIZE; i++) {
+                ctx.beginPath();
+                ctx.moveTo(PADDING, PADDING + i * CELL_SIZE);
+                ctx.lineTo(canvas.width - PADDING, PADDING + i * CELL_SIZE);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(PADDING + i * CELL_SIZE, PADDING);
+                ctx.lineTo(PADDING + i * CELL_SIZE, canvas.height - PADDING);
+                ctx.stroke();
+            }
+            for (let r = 0; r < SIZE; r++) {
+                for (let c = 0; c < SIZE; c++) {
+                    if (board[r][c] !== 0) drawPiece(r, c, boardColors[r][c], board[r][c]);
+                }
+            }
+            if (lastMove) {
+                ctx.strokeStyle = 'red';
+                ctx.lineWidth = 3;
+                const x = PADDING + lastMove.c * CELL_SIZE;
+                const y = PADDING + lastMove.r * CELL_SIZE;
+                ctx.strokeRect(x - CELL_SIZE/2 + 2, y - CELL_SIZE/2 + 2, CELL_SIZE - 4, CELL_SIZE - 4);
+            }
+        }
+
+        function drawPiece(r, c, color, type) {
+            const x = PADDING + c * CELL_SIZE;
+            const y = PADDING + r * CELL_SIZE;
+            ctx.beginPath();
+            ctx.arc(x, y, CELL_SIZE / 2 * 0.85, 0, Math.PI * 2);
+            let drawColor = color;
+            if (gameOver) drawColor = (type === 1) ? 'black' : 'white';
+            ctx.fillStyle = drawColor;
+            ctx.shadowBlur = 4;
+            ctx.shadowColor = "rgba(0,0,0,0.3)";
+            ctx.fill();
+            ctx.shadowBlur = 0; 
+            ctx.strokeStyle = (drawColor === 'white') ? '#ccc' : 'rgba(0,0,0,0.2)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        }
+
+        function showStatus(text, className, duration) {
+            statusDisplay.textContent = text;
+            statusDisplay.className = `status-message ${className}`;
+            statusDisplay.style.display = 'block';
+            if (duration) {
+                setTimeout(() => {
+                    if (text === "GAME START" && !gameOver) statusDisplay.style.display = 'none';
+                }, duration);
+            }
+        }
+
+        colorBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                if (gameOver) return;
+                colorBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                selectedColor = btn.dataset.color;
+            });
+        });
+
+        canvas.addEventListener('click', (e) => {
+            if (gameOver || currentPlayer !== 1) return;
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            const c = Math.round((x - PADDING) / CELL_SIZE);
+            const r = Math.round((y - PADDING) / CELL_SIZE);
+            if (r >= 0 && r < SIZE && c >= 0 && c < SIZE && board[r][c] === 0) {
+                makeMove(r, c, 1, selectedColor);
+                if (!gameOver) {
+                    currentPlayer = 2;
+                    setTimeout(computerMove, 400);
+                }
+            }
+        });
+
+        function makeMove(r, c, player, color) {
+            board[r][c] = player;
+            boardColors[r][c] = color;
+            lastMove = { r, c };
+            draw();
+            if (checkWin(r, c, player)) endGame(player);
+        }
+
+        function checkWin(r, c, player) {
+            const directions = [[0, 1], [1, 0], [1, 1], [1, -1]];
+            for (let [dr, dc] of directions) {
+                let count = 1;
+                for (let i = 1; i < 5; i++) {
+                    const nr = r + dr * i, nc = c + dc * i;
+                    if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && board[nr][nc] === player) count++;
+                    else break;
+                }
+                for (let i = 1; i < 5; i++) {
+                    const nr = r - dr * i, nc = c - dc * i;
+                    if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && board[nr][nc] === player) count++;
+                    else break;
+                }
+                if (count >= 5) return true;
+            }
+            return false;
+        }
+
+        function endGame(winner) {
+            gameOver = true;
+            setTimeout(() => {
+                draw(); 
+                if (winner === 1) {
+                    showStatus("YOU WIN", "win-text");
+                    startFireworks();
+                } else {
+                    showStatus("YOU LOSE", "lose-text");
+                }
+                againBtn.style.display = 'block';
+            }, 50);
+        }
+
+        // --- 電腦 AI 邏輯 (進攻增強版) ---
+        function computerMove() {
+            if (gameOver) return;
+            let moves = [];
+            for (let r = 0; r < SIZE; r++) {
+                for (let c = 0; c < SIZE; c++) {
+                    if (board[r][c] === 0) {
+                        let score = evaluateSpot(r, c);
+                        moves.push({ r, c, score });
+                    }
+                }
+            }
+            moves.sort((a, b) => b.score - a.score);
+
+            let finalMove;
+            const randomFactor = Math.random();
+            // 隨機誤差維持 15%
+            if (randomFactor < 0.15 && moves.length > 3) {
+                const idx = Math.floor(Math.random() * 3) + 1; 
+                finalMove = moves[idx];
+            } else {
+                finalMove = moves[0];
+            }
+            makeMove(finalMove.r, finalMove.c, 2, selectedColor);
+            currentPlayer = 1;
+        }
+
+        function evaluateSpot(r, c) {
+            let score = 0;
+            const myPotential = checkPotential(r, c, 2);
+            const enemyPotential = checkPotential(r, c, 1);
+            
+            // 攻擊分 (電腦) 從 15 增加到 18
+            score += myPotential * 18; 
+            // 阻擋分 (玩家) 從 20 降低到 10
+            score += enemyPotential * 10; 
+
+            // 基本權重 (中心區域)
+            score += (SIZE/2 - Math.abs(r - SIZE/2)) * 0.1;
+            score += (SIZE/2 - Math.abs(c - SIZE/2)) * 0.1;
+            return score;
+        }
+
+        function checkPotential(r, c, player) {
+            let totalVal = 0;
+            const directions = [[0, 1], [1, 0], [1, 1], [1, -1]];
+            for (let [dr, dc] of directions) {
+                let count = 1;
+                for (let i = 1; i < 5; i++) {
+                    const nr = r + dr * i, nc = c + dc * i;
+                    if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && board[nr][nc] === player) count++;
+                    else break;
+                }
+                for (let i = 1; i < 5; i++) {
+                    const nr = r - dr * i, nc = c - dc * i;
+                    if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && board[nr][nc] === player) count++;
+                    else break;
+                }
+                if (count >= 5) return 100000;
+                totalVal += Math.pow(count, 3); 
+            }
+            return totalVal;
+        }
+
+        function startFireworks() {
+            function createFirework() {
+                const x = Math.random() * fwCanvas.width;
+                const y = Math.random() * fwCanvas.height * 0.8;
+                const color = `hsl(${Math.random() * 360}, 100%, 50%)`;
+                for (let i = 0; i < 40; i++) {
+                    particles.push({
+                        x, y, vx: (Math.random() - 0.5) * 10, vy: (Math.random() - 0.5) * 10, life: 100, color
+                    });
+                }
+            }
+            let frames = 0;
+            function animate() {
+                if (!gameOver) return;
+                fwCtx.clearRect(0, 0, fwCanvas.width, fwCanvas.height);
+                if (frames % 15 === 0) createFirework();
+                particles = particles.filter(p => p.life > 0);
+                particles.forEach(p => {
+                    p.x += p.vx; p.y += p.vy; p.vy += 0.12; p.life -= 1.5;
+                    fwCtx.fillStyle = p.color; fwCtx.globalAlpha = p.life / 100;
+                    fwCtx.beginPath(); fwCtx.arc(p.x, p.y, 2.5, 0, Math.PI * 2); fwCtx.fill();
+                });
+                frames++;
+                animationFrameId = requestAnimationFrame(animate);
+            }
+            animate();
+        }
+
+        window.onload = init;
+        window.onresize = () => {
+            const containerWidth = Math.min(window.innerWidth - 40, 600);
+            canvas.width = containerWidth; canvas.height = containerWidth;
+            fwCanvas.width = containerWidth; fwCanvas.height = containerWidth;
+            CELL_SIZE = (canvas.width - 2 * PADDING) / (SIZE - 1);
+            draw();
+        };
+    </script>
+</body>
+</html>

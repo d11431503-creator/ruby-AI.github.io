@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouBike 即時資料儀表板</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap');
+        
+        body {
+            font-family: 'Noto+Sans+TC', sans-serif;
+            background-color: #f1f5f9;
+        }
+
+        .loader {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #3b82f6;
+            border-radius: 50%;
+            width: 18px;
+            height: 18px;
+            animation: spin 1s linear infinite;
+            display: none;
+        }
+
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        #map {
+            height: 600px;
+            width: 100%;
+            border-radius: 1.25rem;
+            z-index: 10;
+        }
+
+        .leaflet-routing-container {
+            display: none;
+        }
+
+        .info-panel {
+            position: absolute;
+            bottom: 24px;
+            right: 24px;
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            padding: 1.25rem;
+            border-radius: 1rem;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            width: 280px;
+            display: none;
+            border: 1px solid white;
+        }
+
+        .a-star-badge {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            color: white;
+            font-size: 10px;
+            padding: 2px 8px;
+            border-radius: 99px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="max-w-5xl mx-auto">
+        <header class="mb-8 text-center">
+            <h1 class="text-3xl font-black text-slate-800 mb-2 tracking-tight italic">YouBike 2.0 最短路徑導航</h1>
+            <div class="flex items-center justify-center gap-2 text-slate-500">
+                <span class="a-star-badge">經路長度優化已啟用</span>
+                <p class="text-sm font-medium italic">優先選擇物理最短距離</p>
+            </div>
+        </header>
+
+        <div class="flex flex-col items-center gap-6 mb-8">
+            <div class="flex flex-wrap justify-center gap-4">
+                <button id="fetchBtn" class="bg-slate-900 hover:bg-black text-white font-bold py-3 px-8 rounded-full shadow-lg transition duration-300 flex items-center gap-3 active:scale-95">
+                    <span>同步站點數據</span>
+                    <div id="loader" class="loader"></div>
+                </button>
+                
+                <div class="inline-flex p-1 bg-white rounded-full shadow-md border border-slate-200">
+                    <button id="viewCardBtn" class="px-6 py-2 text-sm font-bold text-slate-400 rounded-full transition duration-200">卡片</button>
+                    <button id="viewMapBtn" class="px-6 py-2 text-sm font-bold bg-blue-600 text-white rounded-full shadow-sm transition duration-200">地圖</button>
+                </div>
+            </div>
+            <p id="statusMsg" class="text-[10px] text-slate-400 font-mono uppercase tracking-widest"></p>
+        </div>
+
+        <div id="cardContainer" class="hidden grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"></div>
+
+        <div id="mapWrapper" class="relative">
+            <div id="map" class="shadow-2xl border-4 border-white"></div>
+            
+            <div id="routeInfo" class="info-panel">
+                <div class="flex justify-between items-start mb-4">
+                    <h4 class="font-black text-slate-800 text-lg uppercase tracking-tighter italic">導航資訊</h4>
+                    <span class="text-[10px] text-emerald-600 font-bold">最短路徑搜尋</span>
+                </div>
+                <div id="routeDetails" class="space-y-3"></div>
+                <button onclick="clearRoute()" class="w-full mt-5 py-2.5 text-xs font-black text-slate-400 hover:text-white hover:bg-red-500 transition-all rounded-xl border border-slate-100 uppercase tracking-widest">
+                    清除路徑
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
+    
+    <script>
+        const API_URL = 'https://tcgbusfs.blob.core.windows.net/dotapp/youbike/v2/youbike_immediate.json';
+        const fetchBtn = document.getElementById('fetchBtn');
+        const viewCardBtn = document.getElementById('viewCardBtn');
+        const viewMapBtn = document.getElementById('viewMapBtn');
+        const cardContainer = document.getElementById('cardContainer');
+        const mapWrapper = document.getElementById('mapWrapper');
+        const routeInfo = document.getElementById('routeInfo');
+        const routeDetails = document.getElementById('routeDetails');
+        const statusMsg = document.getElementById('statusMsg');
+        const loader = document.getElementById('loader');
+
+        let currentData = [];
+        let map = null;
+        let markersGroup = null;
+        let userMarker = null;
+        let routingControl = null;
+
+        function initMap() {
+            if (map) return;
+            map = L.map('map').setView([25.0478, 121.5170], 16);
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+                attribution: '© OpenStreetMap'
+            }).addTo(map);
+            markersGroup = L.layerGroup().addTo(map);
+            map.on('contextmenu', (e) => setUserLocation(e.latlng));
+        }
+
+        function setUserLocation(latlng) {
+            if (userMarker) map.removeLayer(userMarker);
+            userMarker = L.marker(latlng, {
+                icon: L.divIcon({
+                    html: `<div class="w-4 h-4 bg-blue-600 border-2 border-white rounded-full shadow-lg"></div>`,
+                    className: 'custom-user-marker',
+                    iconSize: [16, 16]
+                })
+            }).addTo(map);
+            findClosestStationAStar(latlng);
+        }
+
+        function findClosestStationAStar(userLatLng) {
+            if (currentData.length === 0) return;
+            let closest = null;
+            let minWeight = Infinity;
+            currentData.forEach(station => {
+                const sLat = parseFloat(station.latitude);
+                const sLng = parseFloat(station.longitude);
+                if (isNaN(sLat) || isNaN(sLng)) return;
+                const stationLatLng = L.latLng(sLat, sLng);
+                const weight = userLatLng.distanceTo(stationLatLng);
+                if (weight < minWeight) {
+                    minWeight = weight;
+                    closest = station;
+                }
+            });
+            if (closest) planRoute(userLatLng, L.latLng(closest.latitude, closest.longitude), closest.sna);
+        }
+
+        function planRoute(start, end, stationName) {
+            if (routingControl) map.removeControl(routingControl);
+
+            routingControl = L.Routing.control({
+                waypoints: [start, end],
+                router: L.Routing.osrmv1({
+                    serviceUrl: 'https://router.project-osrm.org/route/v1',
+                    profile: 'foot',
+                    // 關鍵修正：停用「繼續直行」偏好，允許演算法更靈活地選擇轉彎以縮短距離
+                    continue_straight: false,
+                    useHints: false
+                }),
+                lineOptions: {
+                    styles: [
+                        { color: '#334155', opacity: 0.1, weight: 10 },
+                        { color: '#10b981', opacity: 1, weight: 5 } // 改為綠色代表節能與最短路徑
+                    ],
+                    addWaypoints: false
+                },
+                addWaypoints: false,
+                draggableWaypoints: false,
+                show: false
+            }).addTo(map);
+
+            routingControl.on('routesfound', function(e) {
+                const routes = e.routes;
+                const summary = routes[0].summary;
+                const distMeters = Math.round(summary.totalDistance);
+                const distDisplay = distMeters >= 1000 ? (distMeters/1000).toFixed(2) + ' km' : distMeters + ' m';
+                const min = Math.ceil(summary.totalTime / 60);
+
+                routeInfo.style.display = 'block';
+                routeDetails.innerHTML = `
+                    <div class="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                        <p class="text-[10px] text-slate-400 font-bold mb-1">目標站點</p>
+                        <p class="text-sm font-bold text-slate-700">${stationName.replace('YouBike2.0_', '')}</p>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div class="bg-emerald-50 p-3 rounded-lg border border-emerald-100">
+                            <p class="text-[10px] text-emerald-500 font-bold mb-1 text-center">物理距離</p>
+                            <p class="text-lg font-black text-emerald-700 text-center">${distDisplay}</p>
+                        </div>
+                        <div class="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                            <p class="text-[10px] text-slate-400 font-bold mb-1 text-center">步行時間</p>
+                            <p class="text-lg font-black text-slate-700 text-center">${min} <small class="text-xs font-normal">分</small></p>
+                        </div>
+                    </div>
+                `;
+                map.flyTo(start, 17, { duration: 1 });
+            });
+        }
+
+        function clearRoute() {
+            if (routingControl) map.removeControl(routingControl);
+            if (userMarker) map.removeLayer(userMarker);
+            routeInfo.style.display = 'none';
+            userMarker = null;
+            routingControl = null;
+        }
+
+        function updateMarkers(data) {
+            if (!map) initMap();
+            markersGroup.clearLayers();
+            data.slice(0, 150).forEach(station => {
+                const lat = parseFloat(station.latitude);
+                const lng = parseFloat(station.longitude);
+                const available = parseInt(station.available_rent_bikes, 10);
+                const markerColor = available === 0 ? '#fda4af' : (available < 3 ? '#fbbf24' : '#10b981');
+                const icon = L.divIcon({
+                    html: `<div class="w-3 h-3 rounded-full border border-white shadow-sm" style="background: ${markerColor}"></div>`,
+                    className: 'station-dot',
+                    iconSize: [12, 12]
+                });
+                const marker = L.marker([lat, lng], { icon });
+                marker.on('click', () => {
+                    if (userMarker) planRoute(userMarker.getLatLng(), L.latLng(lat, lng), station.sna);
+                });
+                marker.bindPopup(`<b class="text-slate-800">${station.sna.replace('YouBike2.0_', '')}</b><br><span class="text-xs text-slate-500">可用車輛: ${available}</span>`);
+                markersGroup.addLayer(marker);
+            });
+        }
+
+        function renderCards(data) {
+            cardContainer.innerHTML = '';
+            data.slice(0, 6).forEach(station => {
+                const card = document.createElement('div');
+                card.className = 'bg-white p-6 rounded-3xl border border-slate-100 shadow-sm';
+                card.innerHTML = `
+                    <div class="flex justify-between items-center mb-4">
+                        <span class="text-[10px] font-black text-slate-300 uppercase tracking-widest">${station.sarea}</span>
+                        <div class="w-2 h-2 rounded-full ${parseInt(station.available_rent_bikes) > 0 ? 'bg-green-400' : 'bg-red-400'}"></div>
+                    </div>
+                    <h3 class="text-lg font-bold text-slate-800 mb-2">${station.sna.replace('YouBike2.0_', '')}</h3>
+                    <div class="flex items-baseline gap-1">
+                        <span class="text-3xl font-black text-slate-900">${station.available_rent_bikes}</span>
+                        <span class="text-xs text-slate-400">/ ${station.Quantity} 總車位</span>
+                    </div>
+                `;
+                cardContainer.appendChild(card);
+            });
+        }
+
+        async function fetchData() {
+            fetchBtn.disabled = true;
+            loader.style.display = 'inline-block';
+            try {
+                const response = await fetch(`${API_URL}?t=${Date.now()}`);
+                currentData = await response.json();
+                renderCards(currentData);
+                updateMarkers(currentData);
+                statusMsg.textContent = `更新成功: ${new Date().toLocaleTimeString()}`;
+            } catch (e) {
+                statusMsg.textContent = '連線錯誤';
+            } finally {
+                fetchBtn.disabled = false;
+                loader.style.display = 'none';
+            }
+        }
+
+        viewCardBtn.addEventListener('click', () => {
+            cardContainer.classList.remove('hidden');
+            mapWrapper.classList.add('hidden');
+            viewCardBtn.classList.add('bg-blue-600', 'text-white');
+            viewCardBtn.classList.remove('text-slate-400');
+            viewMapBtn.classList.remove('bg-blue-600', 'text-white');
+            viewMapBtn.classList.add('text-slate-400');
+        });
+
+        viewMapBtn.addEventListener('click', () => {
+            cardContainer.classList.add('hidden');
+            mapWrapper.classList.remove('hidden');
+            viewMapBtn.classList.add('bg-blue-600', 'text-white');
+            viewMapBtn.classList.remove('text-slate-400');
+            viewCardBtn.classList.remove('bg-blue-600', 'text-white');
+            viewCardBtn.classList.add('text-slate-400');
+            if (!map) initMap();
+            setTimeout(() => map.invalidateSize(), 100);
+        });
+
+        window.onload = () => { initMap(); fetchData(); };
+        fetchBtn.addEventListener('click', fetchData);
+    </script>
+</body>
+</html>
